@@ -1,39 +1,80 @@
+= Migration der Daten von https://limmobi.ch/
+
+== Export erstellen:
+. In Limmobi:
+-> Admin -> Limmobi Konto -> Instanz -> ZIP Archiv erstellen
+. erstelltes Archiv downloaden
+
+== Postgres-Datenbank aus dem limmobi-Export generieren
+
+Die Commands sind für Linux.
+Falls diese auf einem Windows-Rechner ausgeführt werden sollen, verwendet man vermutlich am Besten das Windows-Subsystem für Linux (WSL) oder erstellt sich eine Linux-VM (z.B. mit VirtualBox).
+
+Das limmobi-Excel hat über 30 Tabs/Sheets, weshalb ich nicht jedes CSV-File einzeln exportieren wollte.
+Falls man die CSV-Files manuell erstellt bzw. kein LibreOffice installiert hat, kann man die folgenden beiden Schritte überspringen...
+
+=== Libre Office Calc File erstellen
+. Heruntergeladenes Excel-File in Libre Office Calc öffnen
+. Speichern als ... -> ODS Format
+
+=== Erstellung von CSV-Files
+CSV-Export Befehl:
+[sourc, bash]
+----
 soffice --convert-to csv:"Text - txt - csv (StarCalc)":44,34,UTF8,1,,0,true,true,true,false,false,-1 limmobi.ods
+----
 
-"Text - txt - csv (StarCalc)" : for Calc to CSV
+==== Erläuterungen zu den einzelnen Attributen des CSV-Export Befehls
+* "Text - txt - csv (StarCalc)" : for Calc to CSV
 
-44: , as field separator
-34: " for text delimiter
-UTF8: Character Encoding
-1: Number of first line (means no line skipped)
-empty: no cell formatting defined
-0: language identifier -> 0=use the one of the UI
-true: "Quote all text cells" -> yes (false is default); CSV export
-true: If true, the number cells are stored as numbers. If false, the numbers are stored as text, with text delimiters. => hab ich auf den Default (true) gesetzt (hat aber am Ende keinen Einfluss, weil pgfutter die Zahlen wieder in Strings wandelt...)
-true: "Save cell contents as shown" -> yes
-false: ?
-false: ?
--1: later added option to export all sheets/tabs of the Libreoffice Calc-File to CSVs
+* 44: , as field separator
+* 34: " for text delimiter
+* UTF8: Character Encoding
+* 1: Number of first line (means no line skipped)
+* empty: no cell formatting defined
+* 0: language identifier -> 0=use the one of the UI
+* true: "Quote all text cells" -> yes (false is default); CSV export
+* true: If true, the number cells are stored as numbers. If false, the numbers are stored as text, with text delimiters. => hab ich auf den Default (true) gesetzt (hat aber am Ende keinen Einfluss, weil pgfutter die Zahlen wieder in Strings wandelt...)
+* true: "Save cell contents as shown" -> yes
+* false: ?
+* false: ?
+* -1: later added option to export all sheets/tabs of the Libreoffice Calc-File to CSVs
 
+==== Links
+* https://wiki.openoffice.org/wiki/Documentation/DevGuide/Spreadsheets/Filter_Options[Dokumentation der ersten 9 Attribute]
+* https://wiki.documentfoundation.org/ReleaseNotes/7.2#Document_Conversion[Dokumentation des letzten Attributs]
 
-https://wiki.openoffice.org/wiki/Documentation/DevGuide/Spreadsheets/Filter_Options
-https://wiki.documentfoundation.org/ReleaseNotes/7.2#Document_Conversion  -> last option (new)
-
-Filenamen-Cleanup (ersetzt Leerzeich, Bindestriche und Klammern mit Unterstrichen) mit
+=== Bereinigung der CSV-Files
+==== Filenamen-Cleanup (ersetzt Leerzeich, Bindestriche und Klammern mit Unterstrichen)
+da die Filenamen später die Tabellennamen in der Postgres-Db bilden:
+[source, bash]
+----
 rename "s/[\s\-\(\)]/_/g" *.csv
+----
 
-Files müssen weiter bereinigt werden:
-- Zeilen, welche mit einem Komma enden müssen mit dem Ending ,"" ersetzt werden, da pgfutter damit nicht umgehen kann:  sed -i 's/,$/,""/g' *.csv
-- Header, welche einen Namen doppelt enthalten -> Header müssen eindeutig sein, sonst wird die gesamte Tabelle nicht erstellt
-  Hab ich von Hand gemacht, da nur das Invoice- und Lease-Unit CSV davon betroffen waren:
-	limmobi_Invoice.csv -> die zweite "Pro Rata Remark" Spalte geändert auf "Pro Rata Remark_2"
-	limmobi_Lease_Unit.csv -> die zweite "Name" Spalte auf "Name_2" geändert & die zweite "Volume" Spalte auf "Volume_2" geändert
+==== Bereinigung von fehlerhaften CSV-Inhalten
+Die CSV-Files müssen weiter bereinigt werden:
 
+* Zeilen, welche mit einem Komma `,` enden müssen mit dem Ending `,""` ersetzt werden, da pgfutter damit nicht umgehen kann:
++
+[soruce, bash]
+----
+sed -i 's/,$/,""/g' *.csv
+----
 
-Danach Postgres in einem Docker laufen lassen (kann auch direkt mit docker statt mit docker-compose gestartet werden bzw. man kann Postgres auch auf dem System installieren, wenn man es permanent benötigt):
+* Header, welche einen Namen doppelt enthalten -> Header müssen eindeutig sein, sonst wird die gesamte Tabelle nicht erstellt.
+  Das hab ich von Hand gemacht, da nur das Invoice- und Lease-Unit CSV davon betroffen waren:
+	** limmobi_Invoice.csv -> die zweite "Pro Rata Remark" Spalte geändert auf "Pro Rata Remark_2"
+	** limmobi_Lease_Unit.csv -> die zweite "Name" Spalte auf "Name_2" geändert & die zweite "Volume" Spalte auf "Volume_2" geändert
 
-Eine Datei docker-compose-limmobi.yml mit folgendem Inhalt erstellen:
+=== Postgres-Datenbank Instanz
+Postgres in einem Docker laufen lassen (kann auch direkt mit docker statt mit docker-compose gestartet werden bzw. man kann Postgres auch auf dem System installieren, wenn man es permanent benötigt).
+Hier die Schritte mit docker-compose:
 
+. Eine Datei docker-compose-limmobi.yml mit folgendem Inhalt erstellen:
++
+[source, yaml]
+----
 version: '3.1'
 
 services:
@@ -45,45 +86,60 @@ services:
       POSTGRES_DB: limmobi
       POSTGRES_USER: limmobi
       POSTGRES_PASSWORD: limmobi
-
-
-Postgres Docker-Container starten:
+----
+. Postgres Docker-Container starten:
++
+[source, bash]
+----
 docker-compose -f docker-compose-limmobi.yml up
+----
+Danach hat man eine lokale Postgres-Datenbank mit folgender URL:  jdbc:postgresql://localhost:6666/limmobi
 
-URL:  jdbc:postgresql://localhost:6666/limmobi
-
-Danach pgfutter herunterladen in das Verzeichnis indem man die CSVs erstellt hat:
-https://github.com/lukasmartinelli/pgfutter
+=== Datenbank erstellen anhand der CSV-Files
+. pgfutter herunterladen in das Verzeichnis, indem man die CSVs erstellt hat:
++
+[source, bash]
+----
 wget -O pgfutter https://github.com/lukasmartinelli/pgfutter/releases/download/v1.2/pgfutter_linux_amd64
 chmod +x pgfutter
-
-Einzelne Dateien/Tabellen können so in der Postgres-Db erstellt werden:
+----
+. Einzelne Tabellen können mit pgfutter so in der Postgres-Db erstellt werden (oder alle Tabellen auf einmal -> siehe Schritt 3):
++
+[source, bash]
+----
 ./pgfutter --host "localhost" --port "6666" --db "limmobi" --schema "import" --user "limmobi" --pw "limmobi" csv limmobi_Accounting_Period.csv
-
-Mit diesem Skript alle Tabellen in der Db erstellen:
-
+----
+. Mit diesem Skript alle Tabellen auf einmal in der Db erstellen:
++
+[source, bash]
+----
 #!/bin/bash
 for f in *.csv
 do
  echo "Processing $f"
  ./pgfutter --host "localhost" --port "6666" --db "limmobi" --schema "import" --user "limmobi" --pw "limmobi" csv $f
 done
+----
 
+==== Links
+* https://stackoverflow.com/questions/21018256/can-i-automatically-create-a-table-in-postgresql-from-a-csv-file-with-headers[Stackoverflowseite mit Tipps zum Erstellen einer Db aus CSV-Files -> Idee für pgfutter]
+* https://github.com/lukasmartinelli/pgfutter[pgfutter Github-Seite]
 
-https://stackoverflow.com/questions/21018256/can-i-automatically-create-a-table-in-postgresql-from-a-csv-file-with-headers
+NOTE: Ich habe folgenden Kommentar in Stackoverflow ergänzt:
+"I could successfully use pgfutter to create a database from a Libreoffice Calc file with about 35 tabs/sheets after creating a CSV file for every sheet with the following command: soffice --convert-to csv:"Text - txt - csv (StarCalc)":44,34,UTF8,1,,0,true,true,true,false,false,-1 sample.ods The two problems I ran into: 1) lines cannot end with an empty field; replace with empty string "" e.g. with sed -i 's/,$/,""/g' *.csv 2) header entries must be unique; if a file has two identical header entries, fix them. Hope this is helpful for someone..."
 
-INFO: Ich habe folgenden Kommentar in Stackoverflow geschrieben:
-I could successfully use pgfutter to create a database from a Libreoffice Calc file with about 35 tabs/sheets after creating a CSV file for every sheet with the following command: soffice --convert-to csv:"Text - txt - csv (StarCalc)":44,34,UTF8,1,,0,true,true,true,false,false,-1 sample.ods The two problems I ran into: 1) lines cannot end with an empty field; replace with empty string "" e.g. with sed -i 's/,$/,""/g' *.csv 2) header entries must be unique; if a file has two identical header entries, fix them. Hope this is helpful for someone...
-
-
+=== Datenbank-Views
 Views erstellen, welche die Daten wunschgemäss darstellen; z.B.:
 
+[source, sql]
+----
 -- accounts (Kontenplan)
 CREATE VIEW accounts AS
 select acp.start_date as period_start, acp.end_date as period_end, acc.reference, acc.name, acc.default_account, acc.default_account_name, acc.chart_of_account_owner_type, acc.chart_of_account_owner_id, acc.account_owner_type, acc.account_owner_id, acc.referred_id, acc.referred_account_reference, acc.summary_account, acc.volume_transaction_account, acc.inventory_account, acc.volume_account, acc.aggregation_account, acc.delta_balance, acc.opening_balance, acc.parent_account_reference
 from limmobi.import.limmobi_account acc
     join limmobi.import.limmobi_accounting_period acp on acp.uuid = acc.accounting_period
 
--- Kontenplan für 2023:
+-- Select Kontenplan für 2023:
 select * from accounts where period_start like '%.2023' and accounts.period_end like '%.2023'
     and reference <> 'subaccRoot' and reference <> 'coa' order by reference; -- fürs 2023
+----
