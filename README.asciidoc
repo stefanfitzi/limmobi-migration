@@ -11,13 +11,13 @@ Die Commands sind für Linux.
 Falls diese auf einem Windows-Rechner ausgeführt werden sollen, verwendet man vermutlich am Besten das Windows-Subsystem für Linux (WSL) oder erstellt sich eine Linux-VM (z.B. mit VirtualBox).
 
 Das limmobi-Excel hat über 30 Tabs/Sheets, weshalb ich nicht jedes CSV-File einzeln exportieren wollte.
-Falls man die CSV-Files manuell erstellt bzw. kein LibreOffice installiert hat, kann man die folgenden beiden Schritte überspringen...
+Falls man die CSV-Files manuell erstellt, z.B. weil man kein LibreOffice installiert hat, kann man die folgenden beiden Schritte überspringen...
 
 === Libre Office Calc File erstellen
 . Heruntergeladenes Excel-File in Libre Office Calc öffnen
-. Speichern als ... -> ODS Format
+. Speichern als ... -> ODS Format; z.B. unter dem Namen limmobi.ods
 
-=== Erstellung von CSV-Files
+=== Erstellung von CSV-Files aus dem ODS-File
 CSV-Export Befehl:
 [sourc, bash]
 ----
@@ -25,6 +25,9 @@ soffice --convert-to csv:"Text - txt - csv (StarCalc)":44,34,UTF8,1,,0,true,true
 ----
 
 ==== Erläuterungen zu den einzelnen Attributen des CSV-Export Befehls
+Hinweis: Dieser Abschnitt dient rein der Dokumentation des oben aufgeführten Befehls.
+Ist also nicht relevant für den Datenexport und kann übersprungen werden:
+
 * "Text - txt - csv (StarCalc)" : for Calc to CSV
 
 * 44: , as field separator
@@ -45,8 +48,8 @@ soffice --convert-to csv:"Text - txt - csv (StarCalc)":44,34,UTF8,1,,0,true,true
 * https://wiki.documentfoundation.org/ReleaseNotes/7.2#Document_Conversion[Dokumentation des letzten Attributs]
 
 === Bereinigung der CSV-Files
-==== Filenamen-Cleanup (ersetzt Leerzeich, Bindestriche und Klammern mit Unterstrichen)
-da die Filenamen später die Tabellennamen in der Postgres-Db bilden:
+==== Filenamen-Cleanup
+Da die Filenamen später die Tabellennamen in der Postgres-Db bilden, bereinigen wir diese (ersetzen von Leerzeichen, Bindestrichen und Klammern mit Unterstrichen):
 [source, bash]
 ----
 rename "s/[\s\-\(\)]/_/g" *.csv
@@ -129,17 +132,58 @@ NOTE: Ich habe folgenden Kommentar in Stackoverflow ergänzt:
 "I could successfully use pgfutter to create a database from a Libreoffice Calc file with about 35 tabs/sheets after creating a CSV file for every sheet with the following command: soffice --convert-to csv:"Text - txt - csv (StarCalc)":44,34,UTF8,1,,0,true,true,true,false,false,-1 sample.ods The two problems I ran into: 1) lines cannot end with an empty field; replace with empty string "" e.g. with sed -i 's/,$/,""/g' *.csv 2) header entries must be unique; if a file has two identical header entries, fix them. Hope this is helpful for someone..."
 
 === Datenbank-Views
-Views erstellen, welche die Daten wunschgemäss darstellen; z.B.:
+Views erstellen, welche die Daten wunschgemäss darstellen.
+
+*Hinweis:* Die folgenden Db-Views & Queries sind nicht vollständig und sollen nur als einfache Beispiele dienen:
 
 [source, sql]
 ----
 -- accounts (Kontenplan)
 CREATE VIEW accounts AS
 select acp.start_date as period_start, acp.end_date as period_end, acc.reference, acc.name, acc.default_account, acc.default_account_name, acc.chart_of_account_owner_type, acc.chart_of_account_owner_id, acc.account_owner_type, acc.account_owner_id, acc.referred_id, acc.referred_account_reference, acc.summary_account, acc.volume_transaction_account, acc.inventory_account, acc.volume_account, acc.aggregation_account, acc.delta_balance, acc.opening_balance, acc.parent_account_reference
-from limmobi.import.limmobi_account acc
-    join limmobi.import.limmobi_accounting_period acp on acp.uuid = acc.accounting_period
+from limmobi.import.limmobi_account "acc"
+    join limmobi.import.limmobi_accounting_period acp on acp.uuid = acc.accounting_period;
 
--- Select Kontenplan für 2023:
+-- Kontenplan für 2023:
 select * from accounts where period_start like '%.2023' and accounts.period_end like '%.2023'
     and reference <> 'subaccRoot' and reference <> 'coa' order by reference; -- fürs 2023
+
+-- Transaction Leg -> Transaction -> Account
+select tx.transaction_date, tx.posting_text, tx.reference, acc.reference, acc.default_account_name, amount, index
+    from limmobi.import.limmobi_transaction_leg leg
+        join limmobi.import.limmobi_transaction tx on tx.uuid = leg.transaction_uuid
+        join limmobi.import.limmobi_account acc on acc.uuid = leg.account_uuid
+    where tx.technical_status <> 'DELETED'
+    order by transaction_date;
+
+-- Contact -> Address -> Bank Accounts -> Phone Numbers -> Websites
+select cnt.type, cnt.last_name, cnt.first_name, cnt.company_name, add.line_1, add.line_2, add.postal_code, add.city, cnt.salutation, phone.phone_number as phone, mobile.phone_number as mobile, fax.phone_number as fax, web.url as website
+    from limmobi.import.limmobi_contant cnt
+        join limmobi.import.limmobi_contact_address cadd on cadd.uuid = cnt.addresses
+        left join limmobi.import.limmobi_address add on add.uuid = cadd.address
+        left join limmobi.import.limmobi_contact_phone_number phone on phone.contact = cnt.uuid and (phone.phone_number_type = 'MAIN' or phone.phone_number_type = 'HOME' or phone.phone_number_type = 'WORK')
+        left join limmobi.import.limmobi_contact_phone_number mobile on mobile.contact = cnt.uuid and mobile.phone_number_type = 'MOBILE'
+        left join limmobi.import.limmobi_contact_phone_number fax on fax.contact = cnt.uuid and fax.phone_number_type = 'MOBILE'
+        left join limmobi.import.limmobi_contact_website web on web.contact = cnt.uuid
+    where cnt.type != 'IMMUTABLE'
+    -- where cnt.type = 'TENANT' and salutation <> 'COMPANY' and owner <> 'WAHR'
+    order by cnt.type, cnt.company_name, cnt.last_name;
+
+-- Miethaus
+select * from limmobi.import.limmobi_real_property;
+
+-- Mietwohnungen
+select * from limmobi.import.limmobi_lease_unit;
+
+-- Mietverträge
+select unit.name, contr.status, contr.technical_status, cont.last_name, cont.first_name, contr.start_date, contr.end_date, contr.signature_date, contr.cancellation_date, contr.net_rent_amount, contr.ancillary_cost_on_account_amount, contr.payment_slip_reference from limmobi.import.limmobi_lease_contract contr
+    join limmobi.import.limmobi_lease_unit unit on unit.uuid = contr.lease_units
+    join import.limmobi_contant cont on cont.uuid = contr.lessees
+    where contr.technical_status != 'DELETED'
+    order by unit.name, contr.status;
+
+-- Mieter-Rechnungen
+select * from limmobi.import.limmobi_invoice inv
+    where status != 'CANCELLED'
+    order by invoice_date, title
 ----
